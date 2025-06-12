@@ -1,5 +1,5 @@
 // index.js - SEROX AI Backend Server
-// VERSION 5.1 - 403 Forbidden Hotfix
+// VERSION 5.2 - 403 Forbidden Hotfix v2
 // =================================================================
 import express from 'express';
 import cors from 'cors';
@@ -30,10 +30,13 @@ async function fetchExternalGameResult() {
     try {
         const response = await fetch("https://api.bdg88zf.com/api/webapi/GetNoaverageEmerdList", {
             method: "POST",
-            // FIX: Added standard User-Agent header to prevent 403 Forbidden error
+            // FIX v2: Added more standard browser headers to bypass strict API security
             headers: {
                 "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://bdg88zf.com/" // Spoofing the referer
             },
             body: JSON.stringify({
                 pageSize: 10, pageNo: 1, typeId: 1, language: 0,
@@ -44,7 +47,7 @@ async function fetchExternalGameResult() {
         });
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`External API Error: ${response.status} - ${errorText.substring(0,100)}`);
+            throw new Error(`External API Error: ${response.status} - ${errorText.substring(0,150)}`);
         }
         const data = await response.json();
         if (data && data.code === 0 && data.data && data.data.list && data.data.list.length > 0) {
@@ -88,7 +91,6 @@ app.post('/predict', async (req, res) => {
         const actualResultType = getBigSmallFromNumber(actualNumber);
         const previousSharedPrediction = inMemoryCurrentPrediction;
 
-        // Update the history with the result of the *previous* prediction
         if (previousSharedPrediction && previousSharedPrediction.period === endedPeriodFull) {
             let statusOfPreviousPrediction = 'Loss';
             if (previousSharedPrediction.prediction === 'DEFENSIVE_MODE' || previousSharedPrediction.prediction === 'COOLDOWN') {
@@ -97,19 +99,16 @@ app.post('/predict', async (req, res) => {
                 statusOfPreviousPrediction = 'Win';
             }
 
-            // Find the corresponding entry in history and update its status
             const historyEntryToUpdate = inMemoryHistory.find(entry => entry.period === endedPeriodFull);
             if(historyEntryToUpdate) {
                 historyEntryToUpdate.status = statusOfPreviousPrediction;
             }
 
-            // Pass crucial stats from the last cycle back to the AI for learning
             inMemorySharedStats.lastActualOutcome = actualNumber;
             inMemorySharedStats.lastPredictedOutcome = previousSharedPrediction.prediction;
             inMemorySharedStats.lastConfidenceLevel = previousSharedPrediction.confidenceLevel;
         }
 
-        // Add the latest result to the start of the history array
         inMemoryHistory.unshift({
             period: endedPeriodFull,
             actual: actualNumber,
@@ -119,16 +118,13 @@ app.post('/predict', async (req, res) => {
             timestamp: Date.now()
         });
 
-        // Keep history trimmed to a max length
         if (inMemoryHistory.length > MAX_HISTORY_LENGTH) {
             inMemoryHistory.pop();
         }
 
         lastFetchedPeriodFromExternalAPI = endedPeriodFull;
 
-        // ---- CALL THE AI CORE ----
         const aiDecision = ultraAIPredict(inMemoryHistory, inMemorySharedStats);
-        // -------------------------
 
         const nextPeriodToPredictFull = (BigInt(endedPeriodFull) + 1n).toString();
         const newPredictionData = {
@@ -162,7 +158,7 @@ app.post('/predict', async (req, res) => {
 
 // Root endpoint for keep-alive services
 app.get('/', (req, res) => {
-    res.send('SEROX AI Backend (Consensus Core v60.1) is running.');
+    res.send('SEROX AI Backend (Consensus Core v60.2) is running.');
 });
 
 // Function to start the server
