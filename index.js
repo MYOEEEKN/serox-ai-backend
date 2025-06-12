@@ -1,5 +1,5 @@
 // index.js - SEROX AI Backend Server
-// VERSION 5.2 - 403 Forbidden Hotfix v2
+// VERSION 5.3 - Implemented Proxy for 403 Forbidden Hotfix
 // =================================================================
 import express from 'express';
 import cors from 'cors';
@@ -11,6 +11,9 @@ import { getBigSmallFromNumber } from './utils.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// FIX: Define the URL for your proxy server
+const PROXY_URL = 'http://localhost:3001/proxy'; // Use this for local testing
+// const PROXY_URL = 'https://your-proxy-service-name.onrender.com/proxy'; // Use this for production
 
 // Middleware
 app.use(cors({ origin: '*' }));
@@ -24,21 +27,14 @@ let inMemorySharedStats = {};
 let inMemoryCurrentPrediction = null;
 const MAX_HISTORY_LENGTH = 150;
 
-// Fetches the latest game result from the external API
+// Fetches the latest game result via the proxy server
 async function fetchExternalGameResult() {
-    console.log("Backend: Attempting to fetch game result from external API...");
+    console.log("Backend: Requesting game result via proxy...");
     try {
-        const response = await fetch("https://api.bdg88zf.com/api/webapi/GetNoaverageEmerdList", {
+        const response = await fetch(PROXY_URL, {
             method: "POST",
-            // FIX v2: Added more standard browser headers to bypass strict API security
-            headers: {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://bdg88zf.com/" // Spoofing the referer
-            },
-            body: JSON.stringify({
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ // This body will be forwarded by the proxy
                 pageSize: 10, pageNo: 1, typeId: 1, language: 0,
                 random: "4a0522c6ecd8410496260e686be2a57c",
                 signature: "334B5E70A0C9B8918B0B15E517E2069C",
@@ -47,16 +43,16 @@ async function fetchExternalGameResult() {
         });
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`External API Error: ${response.status} - ${errorText.substring(0,150)}`);
+            throw new Error(`Proxy Forwarding Error: ${response.status} - ${errorText.substring(0,150)}`);
         }
         const data = await response.json();
         if (data && data.code === 0 && data.data && data.data.list && data.data.list.length > 0) {
             return data.data.list[0];
         } else {
-            throw new Error(`External API Data Error: ${data.msg || 'Unexpected structure'}`);
+            throw new Error(`Proxied API Data Error: ${data.msg || 'Unexpected structure'}`);
         }
     } catch (e) {
-        console.error("Backend: Fetch External API Exception:", e);
+        console.error("Backend: Fetch via Proxy Exception:", e);
         throw e;
     }
 }
@@ -158,7 +154,7 @@ app.post('/predict', async (req, res) => {
 
 // Root endpoint for keep-alive services
 app.get('/', (req, res) => {
-    res.send('SEROX AI Backend (Consensus Core v60.2) is running.');
+    res.send('SEROX AI Backend (Consensus Core v60.3) is running.');
 });
 
 // Function to start the server
