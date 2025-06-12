@@ -1,14 +1,12 @@
 // index.js - SEROX AI Backend Server
-// VERSION 5.0 - Fully compatible with Modular Consensus Core (v60.0+)
+// VERSION 5.1 - 403 Forbidden Hotfix
 // =================================================================
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 
 // --- Core Application Imports ---
-// Import the main prediction function from the modular architecture
 import { ultraAIPredict } from './main.js';
-// Import utility functions
 import { getBigSmallFromNumber } from './utils.js';
 
 const app = express();
@@ -22,11 +20,9 @@ app.use(express.json());
 let lastFetchedPeriodFromExternalAPI = null;
 let isProcessingPrediction = false;
 let inMemoryHistory = [];
-// This object is the "shared memory" for the AI. It's passed to the AI on each call
-// and allows the AI to maintain its state (like defensive mode, evolving weights, etc.)
 let inMemorySharedStats = {};
 let inMemoryCurrentPrediction = null;
-const MAX_HISTORY_LENGTH = 150; // Increased for deeper analysis
+const MAX_HISTORY_LENGTH = 150;
 
 // Fetches the latest game result from the external API
 async function fetchExternalGameResult() {
@@ -34,10 +30,13 @@ async function fetchExternalGameResult() {
     try {
         const response = await fetch("https://api.bdg88zf.com/api/webapi/GetNoaverageEmerdList", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            // FIX: Added standard User-Agent header to prevent 403 Forbidden error
+            headers: {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            },
             body: JSON.stringify({
                 pageSize: 10, pageNo: 1, typeId: 1, language: 0,
-                // Note: These might need to be updated if the API changes
                 random: "4a0522c6ecd8410496260e686be2a57c",
                 signature: "334B5E70A0C9B8918B0B15E517E2069C",
                 timestamp: Math.floor(Date.now() / 1000)
@@ -55,7 +54,7 @@ async function fetchExternalGameResult() {
         }
     } catch (e) {
         console.error("Backend: Fetch External API Exception:", e);
-        throw e; // Re-throw to be caught by the endpoint handler
+        throw e;
     }
 }
 
@@ -105,18 +104,18 @@ app.post('/predict', async (req, res) => {
             }
 
             // Pass crucial stats from the last cycle back to the AI for learning
-            inMemorySharedStats.lastActualOutcome = actualNumber; // Pass the actual number for analysis
-            inMemorySharedStats.lastPredictedOutcome = previousSharedPrediction.prediction; // Pass the prediction made
-            inMemorySharedStats.lastConfidenceLevel = previousSharedPrediction.confidenceLevel; // Pass the confidence level
+            inMemorySharedStats.lastActualOutcome = actualNumber;
+            inMemorySharedStats.lastPredictedOutcome = previousSharedPrediction.prediction;
+            inMemorySharedStats.lastConfidenceLevel = previousSharedPrediction.confidenceLevel;
         }
 
         // Add the latest result to the start of the history array
         inMemoryHistory.unshift({
             period: endedPeriodFull,
             actual: actualNumber,
-            actualNumber: actualNumber, // Add for compatibility with prediction logic
+            actualNumber: actualNumber,
             resultType: actualResultType,
-            status: 'Pending', // Status will be updated on the next cycle
+            status: 'Pending',
             timestamp: Date.now()
         });
 
@@ -128,8 +127,6 @@ app.post('/predict', async (req, res) => {
         lastFetchedPeriodFromExternalAPI = endedPeriodFull;
 
         // ---- CALL THE AI CORE ----
-        // The AI logic needs the full, updated history and the shared stats object.
-        // The function will mutate the inMemorySharedStats object with its new state.
         const aiDecision = ultraAIPredict(inMemoryHistory, inMemorySharedStats);
         // -------------------------
 
@@ -145,7 +142,6 @@ app.post('/predict', async (req, res) => {
             timestamp: Date.now()
         };
 
-        // Store the latest prediction in memory
         inMemoryCurrentPrediction = newPredictionData;
 
         console.log(`Backend: Sending response for period ${newPredictionData.period}`);
@@ -153,7 +149,7 @@ app.post('/predict', async (req, res) => {
             success: true,
             message: "Prediction cycle complete.",
             currentPrediction: newPredictionData,
-            history: inMemoryHistory.slice(0, 50) // Send a slice of recent history
+            history: inMemoryHistory.slice(0, 50)
         });
 
     } catch (error) {
@@ -164,9 +160,9 @@ app.post('/predict', async (req, res) => {
     }
 });
 
-// Root endpoint for keep-alive services (like UptimeRobot)
+// Root endpoint for keep-alive services
 app.get('/', (req, res) => {
-    res.send('SEROX AI Backend (Consensus Core v60.0) is running.');
+    res.send('SEROX AI Backend (Consensus Core v60.1) is running.');
 });
 
 // Function to start the server
