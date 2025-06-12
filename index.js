@@ -1,9 +1,8 @@
 // index.js - SEROX AI Backend Server
-// VERSION 5.3 - Implemented Proxy for 403 Forbidden Hotfix
+// VERSION 6.0 - Final Architecture (Frontend-First Data Fetching)
 // =================================================================
 import express from 'express';
 import cors from 'cors';
-import fetch from 'node-fetch';
 
 // --- Core Application Imports ---
 import { ultraAIPredict } from './main.js';
@@ -11,70 +10,33 @@ import { getBigSmallFromNumber } from './utils.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-// FIX: Define the URL for your proxy server
-const PROXY_URL = 'http://localhost:3001/proxy'; // Use this for local testing
-// const PROXY_URL = 'https://your-proxy-service-name.onrender.com/proxy'; // Use this for production
 
 // Middleware
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 // Server state variables (in-memory storage)
-let lastFetchedPeriodFromExternalAPI = null;
-let isProcessingPrediction = false;
+let lastProcessedPeriod = null;
 let inMemoryHistory = [];
 let inMemorySharedStats = {};
 let inMemoryCurrentPrediction = null;
 const MAX_HISTORY_LENGTH = 150;
 
-// Fetches the latest game result via the proxy server
-async function fetchExternalGameResult() {
-    console.log("Backend: Requesting game result via proxy...");
-    try {
-        const response = await fetch(PROXY_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ // This body will be forwarded by the proxy
-                pageSize: 10, pageNo: 1, typeId: 1, language: 0,
-                random: "4a0522c6ecd8410496260e686be2a57c",
-                signature: "334B5E70A0C9B8918B0B15E517E2069C",
-                timestamp: Math.floor(Date.now() / 1000)
-            })
-        });
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Proxy Forwarding Error: ${response.status} - ${errorText.substring(0,150)}`);
-        }
-        const data = await response.json();
-        if (data && data.code === 0 && data.data && data.data.list && data.data.list.length > 0) {
-            return data.data.list[0];
-        } else {
-            throw new Error(`Proxied API Data Error: ${data.msg || 'Unexpected structure'}`);
-        }
-    } catch (e) {
-        console.error("Backend: Fetch via Proxy Exception:", e);
-        throw e;
-    }
-}
-
-
-// POST /predict - The main endpoint for the frontend to get predictions
+// The main endpoint for the frontend to get predictions
 app.post('/predict', async (req, res) => {
-    if (isProcessingPrediction) {
-        return res.status(429).json({ success: false, message: "Prediction cycle already in progress." });
+    // The frontend now sends the game result in the request body
+    const { gameResult } = req.body;
+
+    if (!gameResult || !gameResult.issueNumber) {
+        return res.status(400).json({ success: false, message: "Missing gameResult in request body." });
     }
 
-    console.log(`Backend: /predict request received.`);
-
     try {
-        isProcessingPrediction = true;
+        const endedPeriodFull = gameResult.issueNumber.trim();
 
-        const gameApiResult = await fetchExternalGameResult();
-        const endedPeriodFull = gameApiResult.issueNumber.trim();
-
-        if (endedPeriodFull === lastFetchedPeriodFromExternalAPI) {
+        // Check if this period has already been processed to prevent duplicates
+        if (endedPeriodFull === lastProcessedPeriod) {
             console.log(`Backend: Period ${endedPeriodFull} already processed. Sending current data.`);
-            isProcessingPrediction = false;
             return res.json({
                 success: true,
                 message: "Period already processed.",
@@ -83,34 +45,38 @@ app.post('/predict', async (req, res) => {
             });
         }
 
-        const actualNumber = Number(gameApiResult.number);
+        const actualNumber = Number(gameResult.number);
         const actualResultType = getBigSmallFromNumber(actualNumber);
         const previousSharedPrediction = inMemoryCurrentPrediction;
 
+        // Update the history with the result of the *previous* prediction
         if (previousSharedPrediction && previousSharedPrediction.period === endedPeriodFull) {
             let statusOfPreviousPrediction = 'Loss';
-            if (previousSharedPrediction.prediction === 'DEFENSIVE_MODE' || previousSharedPrediction.prediction === 'COOLDOWN') {
+             if (previousSharedPrediction.prediction === 'DEFENSIVE_MODE' || previousSharedPrediction.prediction === 'COOLDOWN') {
                 statusOfPreviousPrediction = 'Cooldown';
             } else if (actualResultType === previousSharedPrediction.prediction) {
                 statusOfPreviousPrediction = 'Win';
             }
 
+            // Find the history entry for the prediction we just got the result for and update its status
             const historyEntryToUpdate = inMemoryHistory.find(entry => entry.period === endedPeriodFull);
             if(historyEntryToUpdate) {
                 historyEntryToUpdate.status = statusOfPreviousPrediction;
             }
 
+            // Pass the results back to the AI for learning
             inMemorySharedStats.lastActualOutcome = actualNumber;
             inMemorySharedStats.lastPredictedOutcome = previousSharedPrediction.prediction;
             inMemorySharedStats.lastConfidenceLevel = previousSharedPrediction.confidenceLevel;
         }
 
+        // Add the new result to the top of our history
         inMemoryHistory.unshift({
             period: endedPeriodFull,
             actual: actualNumber,
             actualNumber: actualNumber,
             resultType: actualResultType,
-            status: 'Pending',
+            status: 'Pending', // This will be updated on the next cycle
             timestamp: Date.now()
         });
 
@@ -118,9 +84,11 @@ app.post('/predict', async (req, res) => {
             inMemoryHistory.pop();
         }
 
-        lastFetchedPeriodFromExternalAPI = endedPeriodFull;
+        lastProcessedPeriod = endedPeriodFull;
 
+        // ---- CALL THE AI CORE ----
         const aiDecision = ultraAIPredict(inMemoryHistory, inMemorySharedStats);
+        // -------------------------
 
         const nextPeriodToPredictFull = (BigInt(endedPeriodFull) + 1n).toString();
         const newPredictionData = {
@@ -136,7 +104,6 @@ app.post('/predict', async (req, res) => {
 
         inMemoryCurrentPrediction = newPredictionData;
 
-        console.log(`Backend: Sending response for period ${newPredictionData.period}`);
         res.json({
             success: true,
             message: "Prediction cycle complete.",
@@ -147,14 +114,12 @@ app.post('/predict', async (req, res) => {
     } catch (error) {
         console.error("Error in /predict endpoint:", error);
         res.status(500).json({ success: false, message: error.message || "Internal server error." });
-    } finally {
-        isProcessingPrediction = false;
     }
 });
 
 // Root endpoint for keep-alive services
 app.get('/', (req, res) => {
-    res.send('SEROX AI Backend (Consensus Core v60.3) is running.');
+    res.send('SEROX AI Backend (Consensus Core v60.5) is running.');
 });
 
 // Function to start the server
